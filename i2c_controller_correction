@@ -1,0 +1,234 @@
+module i2c_controller(
+    input logic clk,
+    input logic reset,
+    input logic [7:0] din,
+    input logic [15:0] dvsr,
+    input logic [2:0] cmd,
+    input logic wr_i2c,
+    output logic scl,
+    inout tri sda,
+    output logic ready,
+    output logic done_tick,
+    output logic ack,
+    output logic [7:0] dout
+);
+
+    // symbolic constant 
+    localparam START_CMD = 3'b000;
+    localparam WR_CMD = 3'b001;
+    localparam RD_CMD = 3'b010;
+    localparam STOP_CMD = 3'b011;
+    localparam RESTART_CMD = 3'b100;
+
+    // FSM state type
+    typedef enum {
+        idle, hold, start1, start2, data1, data2, data3, data4, data_end,
+        restart, stop1, stop2
+    } state_type;
+
+    // declaration
+    state_type state_reg, state_next;
+    logic [15:0] c_reg, c_next;
+    logic [15:0] qutr, half;
+    logic [8:0] tx_reg, tx_next;
+    logic [8:0] rx_reg, rx_next;
+    logic [2:0] cmd_reg, cmd_next;
+    logic [3:0] bit_reg, bit_next;
+    logic sda_out, scl_out, sda_reg, scl_reg, data_phase;
+    logic done_tick_i, ready_i;
+    logic into, nack;
+
+    // body
+    //*******************************************
+    // out control logic
+    //*******************************************
+    // buffer for sda and scl lines
+    always_ff @(posedge clk, posedge reset) begin
+        if (reset) begin
+            sda_reg <= 1'b1;
+            scl_reg <= 1'b1;
+        end else begin
+            sda_reg <= sda_out;
+            scl_reg <= scl_out;
+        end
+    end
+
+    // only master drives scl line
+    assign scl = (scl_reg) ? 1'bz : 1'b0;
+
+    // sda are with pull-up resistors and becomes high when not driven
+    // "into" signal asserted when sda into master
+    assign into = (data_phase && cmd_reg == RD_CMD && bit_reg < 8) ||
+                  (data_phase && cmd_reg == WR_CMD && bit_reg == 8);
+
+    assign sda = (into || sda_reg) ? 1'bz : 1'b0;
+
+    // output
+    assign dout = rx_reg[8:1];  // Corrección: rango correcto
+    assign ack = rx_reg[0];     // obtenido del esclavo en escritura
+    assign nack = din[0];       // usado por el maestro en operación de lectura
+
+    // FSM para transmitir tres bytes 
+    //************************************************
+    // registers
+    always_ff @(posedge clk, posedge reset) begin
+        if (reset) begin
+            state_reg <= idle;
+            c_reg <= 0;
+            bit_reg <= 0;
+            cmd_reg <= 0;
+            tx_reg <= 0;
+            rx_reg <= 0;
+        end else begin 
+            state_reg <= state_next;
+            c_reg <= c_next;
+            bit_reg <= bit_next;
+            cmd_reg <= cmd_next;
+            tx_reg <= tx_next;
+            rx_reg <= rx_next;
+        end           
+    end
+
+    assign qutr = dvsr;
+    assign half = {qutr[14:0], 1'b0}; // half = 2*qutr
+
+    // next - state logic 
+    always_comb begin 
+        state_next = state_reg;
+        c_next = c_reg + 1; // el temporizador cuenta continuamente
+        bit_next = bit_reg;
+        tx_next = tx_reg;
+        rx_next = rx_reg;
+        cmd_next = cmd_reg;
+        done_tick_i = 1'b0;
+        ready_i = 1'b0;
+        scl_out = 1'b1;
+        sda_out = 1'b1;
+        data_phase = 1'b0;
+
+        case (state_reg)
+            idle: begin 
+                ready_i = 1'b1;
+                if (wr_i2c && cmd == START_CMD) begin
+                    state_next = start1;
+                    c_next = 0;
+                end
+            end
+            start1: begin
+                sda_out = 1'b0;
+                if (c_reg == half) begin
+                    c_next = 0;
+                    state_next = start2;
+                end
+            end
+            start2: begin
+                sda_out = 1'b0;
+                scl_out = 1'b0;
+                if (c_reg == qutr) begin
+                    c_next = 0;
+                    state_next = hold;
+                end
+            end
+            hold: begin
+                ready_i = 1'b1;
+                sda_out = 1'b0;
+                scl_out = 1'b0;
+                if (wr_i2c) begin
+                    cmd_next = cmd;
+                    c_next = 0;
+                    case (cmd)
+                        RESTART_CMD, START_CMD: state_next = restart;
+                        STOP_CMD: state_next = stop1;
+                        default: begin
+                            bit_next = 0;
+                            state_next = data1;
+                            tx_next = {din, nack}; // nack usado como NACK en lectura             
+                        end 
+                    endcase
+                end
+            end
+            data1: begin 
+                sda_out = tx_reg[8];
+                scl_out = 1'b0;
+                data_phase = 1'b1;
+                if (c_reg == qutr) begin
+                    c_next = 0;
+                    state_next = data2;
+                end
+            end
+            data2: begin     
+                sda_out = tx_reg[8];
+                data_phase = 1'b1;
+                if (c_reg == qutr) begin
+                    c_next = 0;
+                    state_next = data3;
+                    rx_next = {rx_reg[7:0], sda}; // shift data in
+                end      
+            end
+            data3: begin
+                sda_out = tx_reg[8];
+                data_phase = 1'b1;
+                if (c_reg == qutr) begin
+                    c_next = 0;
+                    state_next = data4;
+                end
+            end
+            data4: begin
+                sda_out = tx_reg[8];
+                scl_out = 1'b0;
+                data_phase = 1'b1;
+                if (c_reg == qutr) begin
+                    c_next = 0;
+                    if (bit_reg == 8) begin
+                        state_next = data_end;
+                    end else begin
+                        state_next = data1;
+                        bit_next = bit_reg + 1;
+                        tx_next = {tx_reg[7:0], 1'b0}; // shift data out
+                    end
+                end
+            end
+            data_end: begin
+                scl_out = 1'b0;
+                sda_out = 1'b0;
+                data_phase = 1'b1;
+                if (c_reg == qutr) begin
+                    c_next = 0;
+                    done_tick_i = 1'b1;
+                    state_next = hold;
+                end
+            end
+            restart: begin
+                sda_out = 1'b1;
+                scl_out = 1'b1;
+                if (c_reg == half) begin
+                    c_next = 0;
+                    state_next = start1;
+                end
+            end
+            stop1: begin
+                sda_out = 1'b0;
+                scl_out = 1'b1;
+                if (c_reg == half) begin
+                    c_next = 0;
+                    state_next = stop2;
+                end
+            end
+            stop2: begin
+                sda_out = 1'b1;
+                scl_out = 1'b1;
+                if (c_reg == qutr) begin
+                    c_next = 0;
+                    done_tick_i = 1'b1;
+                    state_next = idle;
+                end
+            end
+            default: state_next = idle;
+        endcase
+    end
+
+    // assign outputs
+    assign ready = ready_i;
+    assign done_tick = done_tick_i;
+
+endmodule
