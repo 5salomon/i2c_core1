@@ -3,9 +3,9 @@
 // Company: 
 // Engineer: 
 // 
-// Create Date: 05.06.2024 01:18:50
+// Create Date: 07.06.2024 02:39:34
 // Design Name: 
-// Module Name: i2c_controller
+// Module Name: i2c_master
 // Project Name: 
 // Target Devices: 
 // Tool Versions: 
@@ -20,7 +20,7 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module i2c_controller(
+module i2c_master(
 input logic clk , reset ,
 input logic [7:0] din ,
 input logic [15:0] dvsr ,
@@ -32,16 +32,18 @@ input logic ready , done_tick , ack,
 input logic [7:0] dout 
     );
  // symbolic constant 
- localparam START_CMD = 3'b000;
- localparam WR_CMD = 3'b001;
- localparam RD_CMD = 3'b010;
- localparam STOP_CMD = 3'b011;
+ localparam START_CMD   = 3'b000;
+ localparam WR_CMD      = 3'b001;
+ localparam RD_CMD      = 3'b010;
+ localparam STOP_CMD    = 3'b011;
  localparam RESTART_CMD = 3'b100;
+ 
  //fsm state type
  typedef enum {
  idle , hold , start1 , start2 , data1 , data2 , data3 , data4, data_end,
  restart , stop1 , stop2
  }state_type;
+ 
  //declaration
  state_type state_reg, state_next; 
  logic [15:0] c_reg , c_next;
@@ -79,26 +81,28 @@ input logic [7:0] dout
  assign dout = rx_reg[8:1];
  assign ack = rx_reg [0]; // obtain from slave in write               
  assign nack = din[0]; // used by master in read operation  
+ 
  // fsm for trasmitting three bytes 
  //************************************************
  // registers
  always_ff @(posedge clk , posedge reset)
  if (reset) begin
- state_reg <= idle;
- c_reg <= 0;
- bit_reg <= 0;
- cmd_reg <= 0;
- tx_reg <= 0;
- rx_reg <= 0;
+    state_reg <= idle;
+    c_reg     <= 0;
+    bit_reg   <= 0;
+    cmd_reg   <= 0;
+    tx_reg    <= 0;
+    rx_reg    <= 0;
  end
  else begin 
- state_reg <= state_next;
- c_reg <= c_next;
- bit_reg <= bit_next;
- cmd_reg <= cmd_next;
- tx_reg <= tx_next;
- rx_reg <= rx_next;
+    state_reg <= state_next;
+    c_reg     <= c_next;
+    bit_reg   <= bit_next;
+    cmd_reg   <= cmd_next;
+    tx_reg    <= tx_next;
+    rx_reg    <= rx_next;
  end           
+ 
  assign qutr = dvsr;
  assign half = {qutr [14:0], 1'b0}; // half = 2*qutr
  
@@ -128,6 +132,7 @@ input logic [7:0] dout
              sda_out = 1'b0;
              if(c_reg == half) begin
                c_next = 0;
+               state_next = start2;
              end
            end
        start2:begin 
@@ -228,5 +233,6 @@ input logic [7:0] dout
               end
               assign done_tick = done_tick_i;
               assign ready = ready_i;
-                     
+
+
 endmodule

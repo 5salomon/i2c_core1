@@ -3,9 +3,9 @@
 // Company: 
 // Engineer: 
 // 
-// Create Date: 05.06.2024 13:58:01
+// Create Date: 07.06.2024 02:43:28
 // Design Name: 
-// Module Name: i2c_core
+// Module Name: chu_i2c_core
 // Project Name: 
 // Target Devices: 
 // Tool Versions: 
@@ -20,9 +20,10 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module i2c_core(
+module chu_i2c_core
+(
     input logic clk,
-    input logic reset ,
+    input logic reset,
     // slot interface
     input logic cs,
     input logic read,
@@ -32,7 +33,7 @@ module i2c_core(
     input logic [31:0] rd_data,
     //external signal
     output tri scl ,
-    output tri sda
+    inout tri sda
     );
     // signal declaration
     logic [15:0] dvsr_reg;
@@ -40,25 +41,26 @@ module i2c_core(
     logic [7:0] dout;
     logic ready , ack;
     
-    //instantiate spi controller 
-    i2c_controller i2c_unit
+    //instantiate i2c controller 
+    i2c_master i2c_unit
     (
-    .din(wr_data[7:0]), cmd(wr_data[10:8]),
+    .din(wr_data[7:0]), .cmd(wr_data[10:8]),
     .dvsr(dvsr_reg), . done_tick(), .*
     );
     
     // registers
     always_ff @(posedge clk , posedge reset)
     if (reset)
-    dvsr_reg <= 0;
+       dvsr_reg <= 0;
     else 
-    if (wr_dvsr)
-       dvsr_reg <= wr_data[15:0];
+      if (wr_dvsr)
+         dvsr_reg <= wr_data[15:0];
     // decoding 
-    assign wr_dvsr = cs & write & addr[0];
-    assign wr_i2c  = cs & write & addr[0];
+    assign wr_dvsr = cs & write & addr[1:0]==2'b01;
+    assign wr_i2c  = cs & write & addr[1:0]==2'b10;
     
     //read data
     
     assign rd_data = {22'b0 , ack , ready , dout};   
+   
 endmodule
